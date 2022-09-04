@@ -1,0 +1,536 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+library("dplyr") 
+library("plyr") 
+library("readr") 
+library("readxl")
+library("data.table") 
+library(fpp)
+library(fpp2)
+library(tseries)
+library(forecast)
+library(ggplot2)
+library(stats)
+library(TSA)
+```
+
+```{r}
+path <- "/Users/shulundong/Desktop/Time Series Final Project/date.csv"
+path2 <- "/Users/shulundong/Desktop/Time Series Final Project/weather_data_24hr.csv"
+df <- fread(path, select = c("CRASH_DATE"))
+df2 <- fread(path2, select = c("date", "totalprecipIn", "visibilityMiles"))
+```
+
+#Seperation of Date from 2016-2022 on Weather Dataset
+```{r}
+df2_wk_seg <- df2[df2$date >= "2016-01-01"]
+df2_wk_seg <- df2_wk_seg[df2_wk_seg$date < "2022-01-03"]
+df2_wk_seg_fc <- df2[df2$date >= "2022-01-03"]
+df2_wk_seg_fc <- df2_wk_seg_fc[df2_wk_seg_fc$date < "2022-05-01"]
+```
+```{r}
+df2_wk_seg <- df2_wk_seg[order(df2_wk_seg$date)]
+df2_wk_seg$week <- as.Date(cut(df2_wk_seg$date, "week"))
+df2_wk_seg_fc <- df2_wk_seg_fc[order(df2_wk_seg_fc$date)]
+df2_wk_seg_fc$week <- as.Date(cut(df2_wk_seg_fc$date, "week"))
+```
+```{r}
+df2_wk_gp <- df2_wk_seg %>% group_by(week) %>%dplyr:: summarise(across(everything(), mean))
+df2_wk_gp_fc <- df2_wk_seg_fc %>% group_by(week) %>%dplyr:: summarise(across(everything(), mean))
+```
+
+#Seperation of Date from 2016-2022 on Crashes Dataset
+```{r}
+df_wk_seg <- df[df$CRASH_DATE >= "2016-01-01"]
+df_wk_seg <- df_wk_seg[df_wk_seg$CRASH_DATE < "2022-01-03"]
+
+df_wk_seg_fc <- df[df$CRASH_DATE >= "2022-01-03"]
+df_wk_seg_fc <- df_wk_seg_fc[df_wk_seg_fc$CRASH_DATE < "2022-05-01"]
+```
+
+
+
+```{r}
+df_wk_seg <- df_wk_seg[order(df_wk_seg$CRASH_DATE)]
+```
+```{r}
+df_wk_seg$week <- as.Date(cut(df_wk_seg$CRASH_DATE, "week"))
+```
+```{r}
+df_wk_gp <- df_wk_seg %>% group_by(week) %>% dplyr::summarize(crashes = n())
+```
+
+#Validation set h=17
+```{r}
+df_wk_seg_fc <- df_wk_seg_fc[order(df_wk_seg_fc$CRASH_DATE)]
+df_wk_seg_fc$week <- as.Date(cut(df_wk_seg_fc$CRASH_DATE, "week"))
+```
+
+```{r}
+df_wk_gp_fc <- df_wk_seg_fc %>% group_by(week) %>% dplyr::summarize(crashes = n())
+```
+
+#Joining DF1 & Df2
+```{r}
+df_combine <- merge(df2_wk_gp,df_wk_gp,by="week")
+df_combine <- subset(df_combine, select = c('week', 'totalprecipIn', 'crashes', 'visibilityMiles'))
+```
+
+```{r}
+ts_wk2 <- ts(df_combine$crashes, frequency = 52)
+ts_wk3 <- ts(df_combine$totalprecipIn, frequency = 52)
+ts_wk4 <- ts(df_combine$visibilityMiles, frequency = 52)
+```
+
+```{r}
+autoplot(ts_wk2)
+autoplot(ts_wk3)
+autoplot(ts_wk4)
+```
+It looks like the series has a trend and some seasonality. There is a significant drop which is most likely caused by external event COVID-19. 
+
+```{r}
+fit_naive <- snaive(ts_wk2,lambda = 1.555455)
+fit_naive
+```
+
+```{r}
+fc_naive <- forecast(fit_naive, h=17)
+```
+```{r}
+err_naive <- sqrt(mean((fc_naive$mean - df_wk_gp_fc$crashes)^2)) 
+err_naive
+```
+
+```{r}
+autoplot(diff(ts_wk2))
+```
+```{r}
+tsdisplay(ts_wk2)
+```
+```{r}
+BoxCox.lambda(ts_wk2)
+```
+```{r}
+ts_wk_bc <- BoxCox(ts_wk2, lambda = 1.555455)
+```
+
+
+```{r}
+tsdisplay(diff(ts_wk_bc))
+```
+```{r}
+kpss.test(ts_wk2)
+```
+```{r}
+adf.test(ts_wk2)
+```
+Both tests show that the original series is not stationary.
+
+```{r}
+kpss.test(diff(ts_wk_bc))
+```
+```{r}
+adf.test(diff(ts_wk_bc))
+```
+
+After first order differencing, we get a stationary series.
+
+We firstly tried the auto arima to model the data.
+
+```{r}
+fit_wk_auto <- auto.arima(ts_wk2, lambda = 1.555455, seasonal=TRUE)
+```
+```{r}
+fit_wk_auto
+```
+```{r}
+checkresiduals(fit_wk_auto)
+```
+The ACF shows several significant spikes within the lags. However, the Ljung-Box test gave p value > 0.05 and therefore, the residual looks much like the white noise.
+
+Forecast next 16 weeks crash number with auto arima.
+```{r}
+fc_wk2_auto <- forecast(fit_wk_auto, h=17)
+```
+
+```{r}
+autoplot(fc_wk2_auto)
+```
+Evaluation - RMSE
+
+```{r}
+err_auto <- sqrt(mean((fc_wk2_auto$mean - df_wk_gp_fc$crashes)^2)) 
+err_auto
+```
+
+
+We also want to try Exponential Smoothing method.
+As you have already found ets() does not work for high seasonal periods. The reason is that there are too many degrees of freedom associated with the seasonality --- with period 52, there would be 51 degrees of freedom just on the seasonal component which makes little sense.
+
+The ‘smoothing’ part of this method brushes over high and low variations. As the forecast graph shows a smooth line of data, it’s important to note that spikes in data aren’t necessarily represented.
+
+
+```{r}
+fit_ets <- ets(ts_wk2, lambda = "auto")
+```
+```{r}
+autoplot(forecast(fit_ets, h=17))
+```
+
+This seasonality rules out the use of ets models which can't handle data with frequency greater than 24, unless used in combination with STL (Seasonal and Trend decomposition using Loess)
+
+
+Holt Winter model
+
+```{r}
+fit_hw_add <- hw(ts_wk2, damped=TRUE, seasonal='additive', h=17)
+```
+
+STLF can be defined as Seasonal and Trend decomposition using Loess Forecasting model. The following code will decompose the time series using STL, and forecast the seasonally adjusted series with ETS, and return the reseasonalised forecasts.
+
+```{r}
+fit_stlf <- stlf(ts_wk2, method='ets', h=17)
+```
+
+
+```{r}
+autoplot(fit_stlf)
+```
+```{r}
+err_stlf <- sqrt(mean((fit_stlf$mean- df_wk_gp_fc$crashes)^2)) 
+err_stlf
+```
+
+
+
+
+We will try to model the series with TBATS. 
+
+The variance has changed a lot over time, so it needs a transformation.
+• The seasonality has also changed shape over time,
+• and there is a strong trend.
+This makes it an ideal series to test the tbats() function which is designed to handle these features.
+
+```{r}
+fit_wk2_tbats <- tbats(ts_wk2)
+```
+
+```{r}
+fit_wk2_tbats
+```
+```{r}
+checkresiduals(fit_wk2_tbats)
+```
+# Check the accuracy and reality of the data. There might be fake trend or patterns in the plot. Should better start with the point of stiationary trend. Turns out that the data is not city wide collected until 2017-09.
+
+```{r}
+fc_wk2_tbats <- forecast(fit_wk2_tbats, h=17)
+```
+```{r}
+autoplot(fc_wk2_tbats)
+```
+
+```{r}
+err_tbats <- sqrt(mean((fc_wk2_tbats$mean- df_wk_gp_fc$crashes)^2)) 
+err_tbats
+```
+
+
+
+
+
+
+We used Fourier transformation to transform a time-domain representation to a frequency- domain representation, we will use the Fourier transform to decompose the series since it got a dynamic seasonality.
+
+We firstly did the spectrum analysis. Spectral analysis will identify the correlation of sine and cosine functions of different frequency with the observed data. If a large correlation (sine or cosine coefficient) is identified, you can conclude that there is a strong periodicity of the respective frequency (or period) in the data.
+
+Spectral analysis is appropriate for the analysis of stationary time series and for identifying periodic signals that are corrupted by noise. However,spectral analysis is not suitable for non-stationary applications. One goal of spectral analysis is to identify the important frequencies (or periods) in the observed series.
+
+```{r}
+kpss.test(ts_wk2)
+```
+```{r}
+ts_wk_bc_diff <- diff(ts_wk_bc)
+```
+```{r}
+kpss.test(ts_wk_bc_diff)
+```
+```{r}
+adf.test(ts_wk_bc_diff)
+```
+
+***Not sure if this is right.
+```{r}
+autoplot(ts_wk_bc_diff)
+```
+```{r}
+tsdisplay(ts_wk_bc_diff)
+```
+Too much noise, periodogram.
+Investigate one significant frequency.
+
+```{r}
+temp <- periodogram(ts_wk_bc_diff)
+```
+```{r}
+max_freq <- temp$freq[which.max(temp$spec)]
+max_freq
+```
+```{r}
+seasonality <- 1/max_freq
+seasonality
+```
+```{r}
+fit_wk2_fourier <- auto.arima(ts_wk2, xreg=fourier(ts_wk2, 5), seasonal = FALSE, lambda = 1.555455)
+fit_wk2_fourier
+```
+```{r}
+checkresiduals(fit_wk2_fourier)
+```
+```{r}
+fc_wk2_fourier <- forecast(fit_wk2_fourier, xreg = fourier(ts_wk2,K = 5,h=17))
+```
+```{r}
+autoplot(fc_wk2_fourier)
+```
+```{r}
+bestfit <- list(aicc=Inf)
+k = 0
+for(i in 1:25)
+{
+  fit_fourier_best <-auto.arima(ts_wk2, xreg=fourier(ts_wk2, i), seasonal = FALSE, lambda = 1.555455)
+  
+  if(fit_fourier_best$aicc < bestfit$aicc){
+    bestfit <- fit_fourier_best
+    k = i
+  }
+}
+```
+
+```{r}
+fc_wk2_fourier_best <- forecast(bestfit, xreg=fourier(ts_wk2, K=13, h=17))
+```
+```{r}
+autoplot(fc_wk2_fourier_best)
+```
+```{r}
+bestfit
+```
+```{r}
+checkresiduals(bestfit)
+```
+```{r}
+err_fourier_best <- sqrt(mean((fc_wk2_fourier_best$mean - df_wk_gp_fc$crashes)^2))
+err_fourier_best
+```
+
+#Running ARIMA on two variables for car crashes (Percipitation)
+
+
+```{r}
+autoplot(ts_wk3)
+```
+```{r}
+kpss.test(ts_wk3)
+```
+```{r}
+kpss.test(ts_wk4)
+```
+```{r}
+autoplot(diff(ts_wk3))
+```
+```{r}
+kpss.test(diff(ts_wk3))
+```
+```{r}
+length(diff(ts_wk3))
+```
+
+
+
+```{r}
+fit_wk_auto_percip <- auto.arima(ts_wk2, xreg = ts_wk3, lambda = 1.555455, seasonal=TRUE)
+```
+```{r}
+fit_wk_auto_percip
+checkresiduals(fit_wk_auto_percip)
+```
+
+```{r}
+fc_wk_auto_percip <- forecast(fit_wk_auto_percip, xreg = df2_wk_gp_fc$totalprecipIn ,h=17)
+autoplot(fc_wk_auto_percip)
+```
+If differencing is specified, then the differencing is applied to all variables in the regression model before the model is estimated.If differencing is required, then all variables are differenced during the estimation process, although the final model will be expressed in terms of the original variables.
+
+#Running ARIMA MAX on two variables for car crashes (Visibility)
+```{r}
+fit_wk_auto_visibility <- auto.arima(ts_wk2, xreg = ts_wk4, lambda = 1.555455, seasonal=TRUE)
+```
+```{r}
+fit_wk_auto_visibility
+checkresiduals(fit_wk_auto_visibility)
+```
+
+```{r}
+fc_wk_auto_visibility <- forecast(fit_wk_auto_visibility, xreg = df2_wk_gp_fc$visibilityMiles ,h=17)
+autoplot(fc_wk_auto_visibility)
+```
+
+#Running ARIMA MAX on two variables for car crashes (totalprecipIn & visibility)
+
+#Check Correlation of two variables --> correlation might influence the coefficients
+```{r}
+xreg = cbind(Percipitation = ts_wk3, Visibility = ts_wk4)
+fit_wk_auto_both <- auto.arima(ts_wk2, xreg = xreg, lambda = 1.555455, seasonal=TRUE)
+```
+```{r}
+fit_wk_auto_both
+checkresiduals(fit_wk_auto_both)
+```
+
+```{r}
+xreg_fc = cbind(Percipitation = df2_wk_gp_fc$totalprecipIn, Visibility = df2_wk_gp_fc$visibilityMiles)
+fc_wk_auto_both <- forecast(fit_wk_auto_both, xreg = xreg_fc ,h=17)
+autoplot(fc_wk_auto_both)
+```
+Evaluation of ARIMAX model
+
+```{r}
+fc_wk_auto_both
+```
+RMSE
+
+```{r}
+err_arimax_both <- sqrt(mean((fc_wk_auto_both$mean - df_wk_gp_fc$crashes)^2)) 
+err_arimax_both
+```
+
+
+#Cross Validation
+This method has the benefit of providing a much more robust estimation of how the chosen modeling method and parameters will perform in practice.
+
+
+#Intervention Analysis
+It looks like that starting from the week of 2020-03-16, the weekly crash number has a significant drop. We assumed that this drop is very likely caused by the external event - COVID-19. Due to the quarantine, there were less traffic on the road and therefore, led to less car accidents.
+
+It appears that there is a drastic shift in the series, that slowly increased and eventually returns to previous levels. This may indicate an intervention model with a pulse function which is typically employed if the effects are  expected to be only temporary, and decay over time.
+
+Auto Arima: ARIMA(0,1,1)(0,0,1)[52] 
+
+
+Analysis with Pulse function
+
+```{r}
+covid <- 1*(ts_wk2 == 1232)
+```
+
+```{r}
+fit_intv_model <- arimax(log(ts_wk2), order=c(0,1,1), seasonal=list(order=c(0,0,1),period=52), xreg=xreg, xtransf=covid, transfer=list(c(1,0)), method = 'ML')
+```
+
+```{r}
+fit_intv_model
+```
+
+```{r}
+checkresiduals(fit_intv_model)
+```
+```{r}
+fit_intv_model$coef
+```
+
+```{r}
+covidx <- c(covid, rep(0,17))
+```
+
+
+```{r}
+intv_pulse <- fit_intv_model$coef["T1-MA0"]+stats::filter(covidx, filter=fit_intv_model$coef["T1-AR1"], method="recursive", side=1)
+```
+
+
+```{r}
+intv_pulse_x <- Arima(log(ts_wk2), order=c(0,1,1), seasonal=list(order=c(0,0,1),period=52), xreg=intv_pulse[1:length(ts_wk2)])
+```
+```{r}
+intv_pulse_x
+```
+```{r}
+checkresiduals(intv_pulse_x)
+```
+
+
+```{r}
+intv_pulse_fc <- forecast(intv_pulse_x, h=17, xreg=intv_pulse[(length(ts_wk2)+1):(length(ts_wk2)+17)] )
+```
+```{r}
+intv_pulse_fc
+```
+
+```{r}
+autoplot(intv_pulse_fc)
+```
+```{r}
+err_intv_pulse <- sqrt(mean((exp(intv_pulse_fc$mean) - df_wk_gp_fc$crashes)^2)) 
+err_intv_pulse
+```
+
+Analysis with Step function
+```{r}
+covid_step <- 1*(seq(ts_wk2) >= 221)
+```
+```{r}
+fit_intv_step <- arimax(log(ts_wk2), order=c(0,1,1), seasonal=list(order=c(0,0,1),period=52), xreg=xreg, xtransf=covid_step, transfer=list(c(1,0)), method = 'ML')
+```
+
+```{r}
+fit_intv_step
+```
+
+# The coefficient of weather variables are not significant. This might be caused by the high correlation of these two variables.
+
+
+```{r}
+covidx_step <- c(covid_step,  rep(1,18))
+```
+
+```{r}
+intv_step <- fit_intv_step$coef["T1-MA0"]+stats::filter(covidx_step, filter=fit_intv_step$coef["T1-AR1"], method="recursive", side=1)
+```
+
+```{r}
+intv_step_x <- Arima(log(ts_wk2), order=c(0,1,1), seasonal=list(order=c(0,0,1),period=52), xreg=intv_step[1:length(ts_wk2)])
+```
+
+
+```{r}
+intv_step_x
+```
+```{r}
+intv_step_fc <- forecast(intv_step_x, h=17, xreg=intv_step[(length(ts_wk2)+1):(length(ts_wk2)+17)] )
+```
+```{r}
+autoplot(intv_step_fc)
+```
+```{r}
+exp(intv_step_fc$mean)
+```
+
+```{r}
+err_intv_step <- sqrt(mean((exp(intv_step_fc$mean) - df_wk_gp_fc$crashes)^2)) 
+err_intv_step
+```
+
+#VARMA Model
+In many forecasting problems, it may be the case that there are more than just one variable to consider. Attempting to model each variable individually may at times work. However, in these situations, it is often the case that these variables are somehow cross-correlated (i.e., where all variables affect each other), and that structure can be effectively taken advantage of in forecasting.
+
+
+
+
+
